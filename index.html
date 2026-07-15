@@ -103,8 +103,9 @@
   .btn-outline:hover{ background:var(--gold-light); }
   .btn-danger-outline{ background:#fff; border:1.5px solid var(--danger); color:var(--danger); }
   .status-msg{ font-size:12.5px; color:var(--muted); }
-  .kpis{ display:grid; grid-template-columns:repeat(5,1fr); gap:14px; margin-bottom:22px; }
-  @media (max-width:900px){ .kpis{grid-template-columns:repeat(2,1fr);} }
+  .kpis{ display:grid; grid-template-columns:repeat(6,1fr); gap:14px; margin-bottom:22px; }
+  @media (max-width:1050px){ .kpis{grid-template-columns:repeat(3,1fr);} }
+  @media (max-width:600px){ .kpis{grid-template-columns:repeat(2,1fr);} }
   .kpi{
     background:#fff; border:1px solid var(--border); border-radius:10px; padding:16px;
     text-align:center;
@@ -139,6 +140,11 @@
   .badge-ok{ background:var(--ok-bg); color:var(--ok); }
   .badge-nd{ background:var(--warn-bg); color:var(--warn); }
   .badge-estorno{ background:var(--danger-bg); color:var(--danger); }
+  .badge-fuzzy{ background:var(--gold-light); color:var(--plum-dark); border:1px solid var(--gold); }
+  .badge-autorizado{ background:#EDE3F0; color:var(--plum-dark); border:1px solid var(--plum); }
+  tr.fuzzy td{ background:var(--gold-light); }
+  tr.fuzzy td:first-child{ border-left:3px solid var(--plum); }
+  .fuzzy-hint{ display:block; font-size:10.5px; color:var(--muted); margin-top:2px; font-weight:normal; }
   [contenteditable="true"]{ outline:none; border-radius:4px; padding:2px 5px; }
   [contenteditable="true"]:focus{ background:var(--gold-light); box-shadow:0 0 0 1.5px var(--gold); }
   .num-cell{ text-align:right; font-variant-numeric:tabular-nums; }
@@ -216,6 +222,7 @@
     <div class="kpis">
       <div class="kpi"><div class="num" id="kpiTotal">0</div><div class="lbl">Propostas prontas</div></div>
       <div class="kpi"><div class="num" id="kpiValor">R$ 0,00</div><div class="lbl">Valor total comissão</div></div>
+      <div class="kpi warn"><div class="num" id="kpiFuzzy">0</div><div class="lbl">Semelhança a revisar</div></div>
       <div class="kpi warn"><div class="num" id="kpiND">0</div><div class="lbl">Não localizadas (ND)</div></div>
       <div class="kpi danger"><div class="num" id="kpiEstorno">0</div><div class="lbl">Estornos a lançar</div></div>
       <div class="kpi"><div class="num" id="kpiExcluido">0</div><div class="lbl">Excluídos (texto)</div></div>
@@ -230,7 +237,7 @@
 
       <div style="padding:18px 22px 0;">
         <div class="tabpanel active" id="panel-pronto">
-          <div class="note">O cruzamento é feito pelo <strong>CNPJ Empresarial</strong> (quando o relatório traz essa coluna) contra o campo Documento da Base Sis; quando o relatório não tem CNPJ, o cruzamento cai para a <strong>Razão Empresarial</strong> (nome) contra o Segurado da Sis. Linhas em <strong>amarelo</strong> não foram localizadas (ND) — só essas podem ser editadas ou excluídas. As linhas são somadas por empresa + parcela (cada membro contribui com seu valor, somados para o total da proposta naquele mês).</div>
+          <div class="note">O cruzamento é feito pelo <strong>CNPJ Empresarial</strong> (quando o relatório traz essa coluna) contra o campo Documento da Base Sis; quando o relatório não tem CNPJ ou o CNPJ não bate, o cruzamento cai para a <strong>Razão Empresarial</strong> (nome) contra o Segurado da Sis. Se não houver nome idêntico, o sistema procura o nome da Base Sis mais parecido (semelhança por Levenshtein); a partir de <strong>60% de semelhança</strong> a linha fica marcada como <span class="badge badge-fuzzy" style="vertical-align:middle;">Fuzzy</span> com a proposta sugerida, aguardando aprovação manual antes de poder subir no Sis. Linhas <strong>ND</strong> ou <strong>Fuzzy</strong> aparecem destacadas e podem ser editadas ou excluídas; após aprovar uma sugestão, a linha vira <span class="badge badge-autorizado" style="vertical-align:middle;">Autorizado</span> e é travada como as demais. As linhas são somadas por empresa + parcela (cada membro contribui com seu valor, somados para o total da proposta naquele mês).</div>
         </div>
         <div class="tabpanel" id="panel-estorno">
           <div class="note">Estornos (cancelamento) e Descontos (pagamento antecipado) da Alice, ambos com valor negativo — separados do layout principal. O motivo vem da coluna Observações/Pagamento quando disponível.</div>
@@ -246,6 +253,8 @@
           <select id="statusFilter" style="border:1px solid var(--border); border-radius:6px; padding:5px 10px; font-size:12.5px; color:var(--text); background:#fff;">
             <option value="todos">Todos</option>
             <option value="ok">Somente OK</option>
+            <option value="fuzzy">Semelhança a revisar</option>
+            <option value="autorizado">Autorizados</option>
             <option value="nd">Somente ND</option>
           </select>
         </div>
@@ -356,6 +365,50 @@ function extractMotivoFromRaw(rawRow){
 function round2(n){ return Math.round((n + Number.EPSILON) * 100) / 100; }
 function normName(s){
   return stripAccents(String(s||'')).toUpperCase().trim().replace(/\s+/g,' ');
+}
+// ---------- FUZZY MATCH (regra de semelhança >= 60%) ----------
+function levenshtein(a, b){
+  const m = a.length, n = b.length;
+  if(m === 0) return n;
+  if(n === 0) return m;
+  const dp = new Array(n + 1);
+  for(let j = 0; j <= n; j++) dp[j] = j;
+  for(let i = 1; i <= m; i++){
+    let prev = dp[0];
+    dp[0] = i;
+    for(let j = 1; j <= n; j++){
+      const tmp = dp[j];
+      dp[j] = Math.min(
+        dp[j] + 1,
+        dp[j - 1] + 1,
+        prev + (a[i - 1] === b[j - 1] ? 0 : 1)
+      );
+      prev = tmp;
+    }
+  }
+  return dp[n];
+}
+function nameSimilarity(a, b){
+  if(a === b) return 1;
+  const maxLen = Math.max(a.length, b.length);
+  if(maxLen === 0) return 1;
+  return 1 - levenshtein(a, b) / maxLen;
+}
+const FUZZY_MIN_SIMILARITY = 0.6;
+// Procura, entre os nomes da Base Sis, o mais parecido com nameKey.
+// Retorna null se nada atingir o limiar de 60% de semelhança.
+function findBestFuzzyMatch(nameKey, sisNameToProp){
+  let best = null;
+  let bestScore = 0;
+  for(const [key, prop] of sisNameToProp.entries()){
+    const score = nameSimilarity(nameKey, key);
+    if(score > bestScore){
+      bestScore = score;
+      best = { name: key, proposta: prop };
+    }
+  }
+  if(!best || bestScore < FUZZY_MIN_SIMILARITY) return null;
+  return { name: best.name, proposta: best.proposta, score: bestScore };
 }
 function formatBR(n){
   if(n === null || n === undefined || n === '') return '';
@@ -609,16 +662,28 @@ function processAll(){
       const statusMembro = idx.statusMembro !== -1 ? normHeader(row[idx.statusMembro]) : '';
 
       // Cruzamento: pelo CNPJ Empresarial quando existir a coluna, senão pela
-      // Razão Empresarial (nome da empresa/titular).
+      // Razão Empresarial (nome da empresa/titular) exata e, por último, pelo
+      // nome mais parecido na Base Sis (regra de semelhança >= 60%).
       const nameKey = normName(razao);
       let finalProposta = '';
-      let nd = true;
+      let matchType = 'nd';       // 'exact' | 'fuzzy' | 'nd'
+      let matchScore = null;
+      let fuzzyProposta = '';
+      let fuzzyNome = '';
       if(temCnpj && cnpjRaw && sisCnpjToProp.has(cnpjRaw)){
         finalProposta = sisCnpjToProp.get(cnpjRaw);
-        nd = false;
+        matchType = 'exact';
       } else if(sisNameToProp.has(nameKey)){
         finalProposta = sisNameToProp.get(nameKey);
-        nd = false;
+        matchType = 'exact';
+      } else {
+        const fuzzy = findBestFuzzyMatch(nameKey, sisNameToProp);
+        if(fuzzy){
+          matchType = 'fuzzy';
+          matchScore = fuzzy.score;
+          fuzzyProposta = fuzzy.proposta;
+          fuzzyNome = fuzzy.name;
+        }
       }
 
       const negativo = isNumericRaw(comissao) && toNumber(comissao) < 0;
@@ -675,7 +740,8 @@ function processAll(){
       if(!groups.has(groupKey)){
         groups.set(groupKey, {
           proposta: finalProposta, nome: razao, modalidade: modalidade || '',
-          parcela, percentual, nd, valorParcela: 0, comissao: 0
+          parcela, percentual, valorParcela: 0, comissao: 0,
+          matchType, matchScore, fuzzyProposta, fuzzyNome
         });
       }
       const g = groups.get(groupKey);
@@ -691,7 +757,12 @@ function processAll(){
         valorParcela: round2(g.valorParcela),
         percentual: g.percentual,
         comissao: round2(g.comissao),
-        nd: g.nd
+        nd: g.matchType === 'nd',
+        matchType: g.matchType,
+        matchScore: g.matchScore,
+        fuzzyProposta: g.fuzzyProposta,
+        fuzzyNome: g.fuzzyNome,
+        autorizado: false
       });
     });
   });
@@ -714,6 +785,7 @@ function renderKpis(){
   document.getElementById('kpiTotal').textContent = readyRows.length;
   const totalComissao = readyRows.reduce((s,r)=>s+r.comissao,0);
   document.getElementById('kpiValor').textContent = formatBRCurrency(totalComissao);
+  document.getElementById('kpiFuzzy').textContent = readyRows.filter(r=>r.matchType==='fuzzy' && !r.autorizado).length;
   document.getElementById('kpiND').textContent = readyRows.filter(r=>r.nd).length;
   document.getElementById('kpiEstorno').textContent = estornoRows.length;
   document.getElementById('kpiExcluido').textContent = excludedRows.length;
@@ -755,8 +827,10 @@ function renderPronto(){
   const filterEl = document.getElementById('statusFilter');
   const filter = filterEl ? filterEl.value : 'todos';
   const filteredRows = readyRows.filter(r => {
-    if(filter === 'ok') return !r.nd;
-    if(filter === 'nd') return r.nd;
+    if(filter === 'ok') return r.matchType === 'exact';
+    if(filter === 'fuzzy') return r.matchType === 'fuzzy' && !r.autorizado;
+    if(filter === 'autorizado') return r.matchType === 'fuzzy' && r.autorizado;
+    if(filter === 'nd') return r.matchType === 'nd';
     return true;
   });
   const emptyEl = document.getElementById('emptyPronto');
@@ -766,10 +840,14 @@ function renderPronto(){
     : 'Nenhuma proposta com esse status.';
   filteredRows.forEach(r => {
     const tr = document.createElement('tr');
-    if(r.nd) tr.className = 'nd';
-    const editable = r.nd;
+    const pendingFuzzy = r.matchType === 'fuzzy' && !r.autorizado;
+    if(r.matchType === 'nd') tr.className = 'nd';
+    else if(pendingFuzzy) tr.className = 'fuzzy';
+    // Só linhas ND ou com sugestão de semelhança ainda não aprovada podem ser editadas.
+    const editable = r.matchType === 'nd' || pendingFuzzy;
 
-    const tdProp = document.createElement('td'); tdProp.textContent = r.proposta; tr.appendChild(tdProp);
+    const tdProp = maybeEditableCell(editable, r.proposta, v => r.proposta = v.trim());
+    tr.appendChild(tdProp);
 
     tr.appendChild(maybeEditableCell(editable, r.nome, v => r.nome = v.trim()));
 
@@ -788,12 +866,40 @@ function renderPronto(){
     tdCom.className = 'num-cell'; tr.appendChild(tdCom);
 
     const tdStatus = document.createElement('td');
-    tdStatus.innerHTML = r.nd ? '<span class="badge badge-nd">ND</span>' : '<span class="badge badge-ok">OK</span>';
+    if(r.matchType === 'exact'){
+      tdStatus.innerHTML = '<span class="badge badge-ok">OK</span>';
+    } else if(r.matchType === 'fuzzy' && r.autorizado){
+      tdStatus.innerHTML = '<span class="badge badge-autorizado">Autorizado</span>'
+        + '<span class="fuzzy-hint">' + Math.round(r.matchScore*100) + '% de semelhança</span>';
+    } else if(r.matchType === 'fuzzy'){
+      tdStatus.innerHTML = '<span class="badge badge-fuzzy">Fuzzy ' + Math.round(r.matchScore*100) + '%</span>'
+        + '<span class="fuzzy-hint">sugestão: ' + r.fuzzyNome + ' (proposta ' + r.fuzzyProposta + ')</span>';
+    } else {
+      tdStatus.innerHTML = '<span class="badge badge-nd">ND</span>';
+    }
     tr.appendChild(tdStatus);
 
     const tdActions = document.createElement('td');
     tdActions.className = 'rowactions';
-    if(r.nd){
+    if(pendingFuzzy){
+      const okBtn = document.createElement('button');
+      okBtn.className = 'icon-btn restore'; okBtn.textContent = 'Aprovar';
+      okBtn.onclick = () => {
+        r.proposta = r.fuzzyProposta;
+        r.autorizado = true;
+        renderPronto(); renderKpis();
+      };
+      const rejBtn = document.createElement('button');
+      rejBtn.className = 'icon-btn del'; rejBtn.textContent = 'Rejeitar';
+      rejBtn.onclick = () => {
+        r.matchType = 'nd';
+        r.fuzzyProposta = ''; r.fuzzyNome = ''; r.matchScore = null;
+        r.nd = true;
+        renderPronto(); renderKpis();
+      };
+      tdActions.appendChild(okBtn);
+      tdActions.appendChild(rejBtn);
+    } else if(r.matchType === 'nd'){
       const delBtn = document.createElement('button');
       delBtn.className = 'icon-btn del'; delBtn.textContent = 'Excluir';
       delBtn.onclick = () => {
@@ -862,7 +968,7 @@ function renderExcluido(){
     restoreBtn.className = 'icon-btn restore'; restoreBtn.textContent = 'Mover p/ pronto';
     restoreBtn.onclick = () => {
       excludedRows = excludedRows.filter(x=>x.id!==r.id);
-      readyRows.push({id:uidCounter++, proposta:r.proposta, nome:r.nome, modalidade:r.modalidade, parcela:r.parcela, valorParcela:r.valorParcela, percentual:0, comissao:0, nd:false});
+      readyRows.push({id:uidCounter++, proposta:r.proposta, nome:r.nome, modalidade:r.modalidade, parcela:r.parcela, valorParcela:r.valorParcela, percentual:0, comissao:0, nd:false, matchType:'exact', matchScore:null, fuzzyProposta:'', fuzzyNome:'', autorizado:false});
       renderExcluido(); renderPronto(); renderKpis();
     };
     const delBtn = document.createElement('button');
@@ -968,12 +1074,13 @@ async function downloadWorkbook(wb, filename){
 
 document.getElementById('btnExportExcel').addEventListener('click', async () => {
   if(readyRows.length === 0){ showToast('Não há linhas prontas para exportar.'); return; }
+  const pendentes = readyRows.filter(r => r.matchType === 'nd' || (r.matchType === 'fuzzy' && !r.autorizado)).length;
   const wb = new ExcelJS.Workbook();
 
   const headers = ['Proposta ',' Nome da Empresa ',' Modalidade ',' Parcela ',' Valor da Proposta ',' Porcentagem ',' Valor da Comissão'];
   const rows = readyRows.map(r => ({
     values: [r.proposta, r.nome, r.modalidade, r.parcela, round2(r.valorParcela), r.percentual, round2(r.comissao)],
-    highlight: r.nd
+    highlight: r.matchType === 'nd' || (r.matchType === 'fuzzy' && !r.autorizado)
   }));
   buildStyledSheet(wb, 'Para subir (Sis)', headers, rows, { propostaColIdx: 0 });
 
@@ -988,11 +1095,14 @@ document.getElementById('btnExportExcel').addEventListener('click', async () => 
   }
 
   await downloadWorkbook(wb, `Layout_Alice_${dateStamp()}.xlsx`);
-  showToast('Excel exportado.');
+  showToast(pendentes > 0
+    ? `Excel exportado. Atenção: ${pendentes} linha(s) ND/Fuzzy pendente(s) sem proposta confirmada.`
+    : 'Excel exportado.');
 });
 
 document.getElementById('btnExportTxt').addEventListener('click', () => {
   if(readyRows.length === 0){ showToast('Não há linhas prontas para exportar.'); return; }
+  const pendentes = readyRows.filter(r => r.matchType === 'nd' || (r.matchType === 'fuzzy' && !r.autorizado)).length;
   const lines = ['SisWeb#Importacao de parcelas'];
   readyRows.forEach(r => {
     lines.push([r.proposta, r.nome, r.modalidade, r.parcela, formatBR(r.valorParcela), formatBR(r.percentual), formatBR(r.comissao)].join('#'));
@@ -1003,7 +1113,9 @@ document.getElementById('btnExportTxt').addEventListener('click', () => {
   a.href = URL.createObjectURL(blob);
   a.download = `Layout_Alice_${dateStamp()}.txt`;
   a.click();
-  showToast('TXT exportado.');
+  showToast(pendentes > 0
+    ? `TXT exportado. Atenção: ${pendentes} linha(s) ND/Fuzzy pendente(s) sem proposta confirmada.`
+    : 'TXT exportado.');
 });
 
 document.getElementById('btnExportND').addEventListener('click', async () => {
