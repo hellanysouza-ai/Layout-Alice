@@ -297,6 +297,7 @@
         <div style="display:flex; gap:10px; flex-wrap:wrap;" id="footerRight">
           <button class="btn btn-gold" id="btnExportExcel">⬇ Exportar Excel (layout)</button>
           <button class="btn btn-outline" id="btnExportTxt">⬇ Exportar TXT (subir no Sis)</button>
+          <button class="btn btn-outline" id="btnExportCsv">⬇ Exportar CSV</button>
           <button class="btn btn-danger-outline hidden" id="btnExportND">⬇ Exportar ND</button>
           <button class="btn btn-danger-outline hidden" id="btnExportEstorno">⬇ Exportar estornos</button>
           <button class="btn btn-danger-outline hidden" id="btnExportExcluido">⬇ Exportar excluídos</button>
@@ -568,12 +569,14 @@ function findHeaderRow(aoa){
 }
 
 // A Alice as vezes manda o percentual como fracao decimal (0,04 = 4%) e as
-// vezes como numero inteiro de percentual (3 = 3%, -50 = -50%). Se o valor
-// absoluto for maior que 1, tratamos como percentual inteiro e dividimos por 100.
+// vezes como numero inteiro de percentual (3 = 3%, -50 = -50%). Guardamos
+// sempre em ESCALA PERCENTUAL (3 = 3%), porque é isso que o importador de
+// TXT do SisWeb espera — mandar a fração (0,03) faz ele entender 0,03%, não
+// 3%, e isso gera "Comissão divergente" na conferência do Sis.
 function parsePercentAlice(raw){
   if(raw === null || raw === undefined || raw === '') return 0;
   const n = toNumber(raw);
-  return Math.abs(n) > 1 ? n / 100 : n;
+  return Math.abs(n) > 1 ? n : n * 100;
 }
 function onlyDigits(s){
   return String(s ?? '').replace(/\D/g, '');
@@ -799,6 +802,7 @@ function updateFooterButtons(){
   const activeTab = document.querySelector('.tab.active')?.dataset.tab || 'pronto';
   document.getElementById('btnExportExcel').classList.toggle('hidden', activeTab!=='pronto');
   document.getElementById('btnExportTxt').classList.toggle('hidden', activeTab!=='pronto');
+  document.getElementById('btnExportCsv').classList.toggle('hidden', activeTab!=='pronto');
   document.getElementById('btnExportND').classList.toggle('hidden', activeTab!=='pronto' || readyRows.filter(r=>r.nd).length===0);
   document.getElementById('btnExportEstorno').classList.toggle('hidden', activeTab!=='estorno' || estornoRows.length===0);
   document.getElementById('btnExportExcluido').classList.toggle('hidden', activeTab!=='excluido' || excludedRows.length===0);
@@ -904,7 +908,13 @@ function renderPronto(){
       delBtn.className = 'icon-btn del'; delBtn.textContent = 'Excluir';
       delBtn.onclick = () => {
         readyRows = readyRows.filter(x => x.id !== r.id);
-        renderPronto(); renderKpis();
+        excludedRows.push({
+          id: uidCounter++,
+          proposta: r.proposta, nome: r.nome, modalidade: r.modalidade, parcela: r.parcela,
+          valorParcela: r.valorParcela,
+          motivo: 'Excluído manualmente (ND — não localizado)'
+        });
+        renderPronto(); renderExcluido(); renderKpis();
       };
       tdActions.appendChild(delBtn);
     } else {
@@ -942,7 +952,16 @@ function renderEstorno(){
     tdActions.className = 'rowactions';
     const delBtn = document.createElement('button');
     delBtn.className = 'icon-btn del'; delBtn.textContent = 'Excluir';
-    delBtn.onclick = () => { estornoRows = estornoRows.filter(x=>x.id!==r.id); renderEstorno(); renderKpis(); };
+    delBtn.onclick = () => {
+      estornoRows = estornoRows.filter(x=>x.id!==r.id);
+      excludedRows.push({
+        id: uidCounter++,
+        proposta: r.proposta, nome: r.nome, modalidade: r.modalidade, parcela: r.parcela,
+        valorParcela: r.valorParcela,
+        motivo: 'Excluído manualmente da aba Estornos (' + r.motivo + ')'
+      });
+      renderEstorno(); renderExcluido(); renderKpis();
+    };
     tdActions.appendChild(delBtn);
     tr.appendChild(tdActions);
     body.appendChild(tr);
@@ -1116,6 +1135,31 @@ document.getElementById('btnExportTxt').addEventListener('click', () => {
   showToast(pendentes > 0
     ? `TXT exportado. Atenção: ${pendentes} linha(s) ND/Fuzzy pendente(s) sem proposta confirmada.`
     : 'TXT exportado.');
+});
+
+document.getElementById('btnExportCsv').addEventListener('click', () => {
+  if(readyRows.length === 0){ showToast('Não há linhas prontas para exportar.'); return; }
+  const pendentes = readyRows.filter(r => r.matchType === 'nd' || (r.matchType === 'fuzzy' && !r.autorizado)).length;
+  // Usa ; como separador (padrão do CSV brasileiro/Excel) para não colidir
+  // com a vírgula decimal já usada nos valores (mesmo formato do TXT).
+  function csvField(v){
+    const s = String(v ?? '');
+    return /[;"\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+  const headers = ['Proposta','Nome da Empresa','Modalidade','Parcela','Valor da Proposta','Porcentagem','Valor da Comissão'];
+  const lines = [headers.map(csvField).join(';')];
+  readyRows.forEach(r => {
+    lines.push([r.proposta, r.nome, r.modalidade, r.parcela, formatBR(r.valorParcela), formatBR(r.percentual), formatBR(r.comissao)].map(csvField).join(';'));
+  });
+  const content = '\ufeff' + lines.join('\r\n') + '\r\n';
+  const blob = new Blob([content], {type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `Layout_Alice_${dateStamp()}.csv`;
+  a.click();
+  showToast(pendentes > 0
+    ? `CSV exportado. Atenção: ${pendentes} linha(s) ND/Fuzzy pendente(s) sem proposta confirmada.`
+    : 'CSV exportado.');
 });
 
 document.getElementById('btnExportND').addEventListener('click', async () => {
